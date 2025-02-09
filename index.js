@@ -38,8 +38,18 @@ async function processMessage(userMessage) {
             role: "system",
             content: `Extract intent and relevant details from user messages. Return JSON with:
             - intent: "add_expense", "query", "list_categories", "edit_expense", "delete_expense", "list_all_expenses", "help"
-            - extracted_fields: { amount?: number, category?: string, date?: "YYYY-MM-DD"|"yesterday"|"today", period?: "today"|"yesterday", type?: "total"|"category" }
-            - If any detail is missing, return 'null'.`
+            - extracted_fields: {
+                amount?: number,
+                new_amount?: number,
+                category?: string,
+                date?: "YYYY-MM-DD"|"yesterday"|"today",
+                period?: "today"|"yesterday",
+                type?: "total"|"category",
+                old_amount?: number,
+                old_category?: string
+            }
+            Parse natural language carefully for edit/delete operations.
+            Example: "Change 500 food expense to 600" should set old_amount=500, old_category="food", new_amount=600`
           },
           { role: "user", content: userMessage }
         ],
@@ -132,6 +142,49 @@ function getHelpMessage() {
   - Help: "What can you do?"`;
 }
 
+// Add these new functions
+async function editExpense(oldAmount, oldCategory, newAmount) {
+  if (!oldAmount || !oldCategory || !newAmount) {
+    return `❌ Missing required fields. Format: "Change ₹500 food expense to ₹600"`;
+  }
+
+  const expense = await Expense.findOne({
+    amount: oldAmount,
+    expenseCategory: oldCategory
+  }).sort({ date: -1 }); // Get the most recent matching expense
+
+  if (!expense) {
+    return `❌ Couldn't find a ${oldCategory} expense of ₹${oldAmount}. Please verify the amount and category.`;
+  }
+
+  expense.amount = newAmount;
+  await expense.save();
+  return `✅ Updated ${oldCategory} expense from ₹${oldAmount} to ₹${newAmount} (dated ${expense.date.toISOString().split('T')[0]})`;
+}
+
+async function deleteExpense(amount, category, date) {
+  if (!amount || !category) {
+    return `❌ Please specify both amount and category. Example: "Remove ₹300 grocery expense from yesterday"`;
+  }
+
+  const startDate = inferDate(date);
+  startDate.setHours(0, 0, 0, 0);
+  const endDate = new Date(startDate);
+  endDate.setHours(23, 59, 59, 999);
+
+  const result = await Expense.findOneAndDelete({
+    amount: amount,
+    expenseCategory: category,
+    date: { $gte: startDate, $lte: endDate }
+  });
+
+  if (!result) {
+    return `❌ Couldn't find a ${category} expense of ₹${amount}${date ? ` on ${startDate.toISOString().split('T')[0]}` : ''}`;
+  }
+
+  return `✅ Deleted ${category} expense of ₹${amount} from ${startDate.toISOString().split('T')[0]}`;
+}
+
 // Twilio Webhook
 app.post("/sms", async (req, res) => {
   const twiml = new MessagingResponse();
@@ -168,6 +221,28 @@ app.post("/sms", async (req, res) => {
     }
     else if (intent === 'help') {
       twiml.message(getHelpMessage());
+    }
+    else if (intent === 'edit_expense') {
+      if (extracted_fields.old_amount && extracted_fields.old_category && extracted_fields.new_amount) {
+        twiml.message(await editExpense(
+          extracted_fields.old_amount,
+          extracted_fields.old_category,
+          extracted_fields.new_amount
+        ));
+      } else {
+        twiml.message("❌ Please specify the expense to edit. Example: 'Change 500 food expense to 600'");
+      }
+    }
+    else if (intent === 'delete_expense') {
+      if (extracted_fields.amount && extracted_fields.category) {
+        twiml.message(await deleteExpense(
+          extracted_fields.amount,
+          extracted_fields.category,
+          extracted_fields.date
+        ));
+      } else {
+        twiml.message("❌ Please specify the expense to delete. Example: 'Remove 300 grocery expense from yesterday'");
+      }
     }
     else {
       twiml.message("❌ Sorry, I didn't understand that. Type 'help' to see available commands.");
