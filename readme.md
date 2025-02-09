@@ -1,1 +1,1 @@
-need to integrate database to store the amount.
+added functionalities according to date , today , yesterday and also by category. 

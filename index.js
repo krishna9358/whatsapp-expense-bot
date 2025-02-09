@@ -14,10 +14,9 @@ const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MONGO_URI = process.env.MONGO_URI;
 
 // Connect to MongoDB
-mongoose
-  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("MongoDB Connected"))
-  .catch((err) => console.error("MongoDB connection error:", err));
+  .catch(err => console.error("MongoDB connection error:", err));
 
 // Define Expense Schema
 const expenseSchema = new mongoose.Schema({
@@ -28,8 +27,51 @@ const expenseSchema = new mongoose.Schema({
 
 const Expense = mongoose.model("Expense", expenseSchema);
 
-// Function to extract amount and category using LLM
-async function extractData(userMessage) {
+// Date range calculator
+function getDateRange(range) {
+  const now = new Date();
+  const start = new Date(now);
+  const end = new Date(now);
+
+  switch (range) {
+    case 'today':
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+      break;
+    case 'yesterday':
+      start.setDate(start.getDate() - 1);
+      start.setHours(0, 0, 0, 0);
+      end.setDate(end.getDate() - 1);
+      end.setHours(23, 59, 59, 999);
+      break;
+    case 'this_month':
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+      end.setMonth(end.getMonth() + 1);
+      end.setDate(0);
+      end.setHours(23, 59, 59, 999);
+      break;
+    case 'last_month':
+      start.setMonth(start.getMonth() - 1);
+      start.setDate(1);
+      start.setHours(0, 0, 0, 0);
+      end.setDate(0);
+      end.setHours(23, 59, 59, 999);
+      break;
+    case 'last_week':
+      start.setDate(start.getDate() - 7);
+      start.setHours(0, 0, 0, 0);
+      end.setDate(end.getDate() - 1);
+      end.setHours(23, 59, 59, 999);
+      break;
+    default:
+      return { start: null, end: null };
+  }
+  return { start, end };
+}
+
+// Enhanced message processor
+async function processMessage(userMessage) {
   try {
     const response = await axios.post(
       GROQ_API_URL,
@@ -38,114 +80,97 @@ async function extractData(userMessage) {
         messages: [
           {
             role: "system",
-            content: `You are an expense tracker bot. Extract the amount and category from the user's message in JSON format:
-            {
-              "amount": <numeric_value>,
-              "expense_category": "<category_name>"
-            }
-            No extra text or explanation, only JSON output.`,
+            content: `Analyze messages and output JSON with:
+            - intent: 'add_expense' or 'query'
+            For add_expense: { amount: number, category: string }
+            For query: { type: 'total'|'category'|'date', category?: string, period?: 'today'|'yesterday'|'this_month'|'last_month'|'last_week', date?: 'YYYY-MM-DD' }
+            Examples:
+            User: "Spent ₹300 on food" → { "intent": "add_expense", "amount": 300, "category": "food" }
+            User: "Total spent yesterday" → { "intent": "query", "type": "total", "period": "yesterday" }
+            User: "How much on groceries this month?" → { "intent": "query", "type": "category", "category": "groceries", "period": "this_month" }`
           },
-          { role: "user", content: userMessage },
+          { role: "user", content: userMessage }
         ],
-        max_tokens: 100,
+        response_format: { type: "json_object" },
+        temperature: 0.1,
+        max_tokens: 200
       },
       {
         headers: {
           Authorization: `Bearer ${GROQ_API_KEY}`,
-          "Content-Type": "application/json",
-        },
+          "Content-Type": "application/json"
+        }
       }
     );
 
-    const llmResponse = response.data.choices[0].message.content.trim();
-    if (llmResponse.startsWith("{") && llmResponse.endsWith("}")) {
-      const parsedData = JSON.parse(llmResponse);
-      const amount = parsedData.amount || null;
-      const expenseCategory = parsedData.expense_category || "Unknown";
-
-      if (amount && expenseCategory) {
-        // Save expense to MongoDB
-        const newExpense = new Expense({ amount, expenseCategory });
-        await newExpense.save();
-      }
-
-      return { amount, expenseCategory };
-    } else {
-      throw new Error("Invalid JSON response from LLM");
-    }
+    return JSON.parse(response.data.choices[0].message.content.trim());
   } catch (error) {
-    console.error(
-      "Error with Groq API (extractData):",
-      error.response?.data || error.message
-    );
-    return { amount: null, expenseCategory: "Unknown" };
+    console.error("Processing error:", error.response?.data || error.message);
+    throw new Error("Message processing failed");
   }
 }
 
-// Function to get total expenses
-async function getTotalExpenses() {
-  const total = await Expense.aggregate([
-    { $group: { _id: null, totalSpent: { $sum: "$amount" } } },
-  ]);
-  return total.length > 0 ? total[0].totalSpent : 0;
+// Unified query handler
+async function handleQuery(query) {
+  try {
+    const filter = {};
+    
+    // Date filtering
+    if (query.period) {
+      const { start, end } = getDateRange(query.period);
+      filter.date = { $gte: start, $lte: end };
+    } else if (query.date) {
+      const date = new Date(query.date);
+      const nextDay = new Date(date);
+      nextDay.setDate(date.getDate() + 1);
+      filter.date = { $gte: date, $lt: nextDay };
+    }
+
+    // Category filtering
+    if (query.category) {
+      filter.expenseCategory = { $regex: new RegExp(query.category, 'i') };
+    }
+
+    const result = await Expense.aggregate([
+      { $match: filter },
+      { $group: { _id: null, total: { $sum: "$amount" } } }
+    ]);
+
+    return result[0]?.total || 0;
+  } catch (error) {
+    console.error("Query error:", error);
+    return null;
+  }
 }
 
-// Function to get expenses by category
-async function getExpensesByCategory(category) {
-  const total = await Expense.aggregate([
-    { $match: { expenseCategory: { $regex: new RegExp(category, "i") } } },
-    { $group: { _id: "$expenseCategory", totalSpent: { $sum: "$amount" } } },
-  ]);
-  return total.length > 0 ? total[0].totalSpent : 0;
-}
-
-// Function to get expenses by date
-async function getExpensesByDate(date) {
-  const startDate = new Date(date);
-  const endDate = new Date(date);
-  endDate.setDate(endDate.getDate() + 1); // Include entire day
-
-  const total = await Expense.aggregate([
-    { $match: { date: { $gte: startDate, $lt: endDate } } },
-    { $group: { _id: null, totalSpent: { $sum: "$amount" } } },
-  ]);
-  return total.length > 0 ? total[0].totalSpent : 0;
-}
-
-// Twilio webhook to handle incoming WhatsApp messages
+// Twilio webhook
 app.post("/sms", async (req, res) => {
   const twiml = new MessagingResponse();
-  const userMessage = req.body.Body.toLowerCase();
+  try {
+    const processed = await processMessage(req.body.Body);
+    
+    if (processed.intent === 'add_expense') {
+      const expense = new Expense({
+        amount: processed.amount,
+        expenseCategory: processed.category
+      });
+      await expense.save();
+      twiml.message(`Added ₹${processed.amount} under ${processed.category}`);
+    } else if (processed.intent === 'query') {
+      const total = await handleQuery(processed);
+      
+      if (total === null) throw new Error("Query failed");
+      
+      let response = `Total spent: ₹${total}`;
+      if (processed.category) response += ` on ${processed.category}`;
+      if (processed.period) response += ` (${processed.period})`;
+      if (processed.date) response += ` on ${processed.date}`;
 
-  if (/^(hi|hello)$/i.test(userMessage)) {
-    twiml.message("Hi! How can I help you track your expenses today?");
-  } else if (/^(bye|goodbye)$/i.test(userMessage)) {
-    twiml.message("Goodbye! Stay on top of your finances.");
-  } else if (/total expenses/.test(userMessage)) {
-    const totalSpent = await getTotalExpenses();
-    twiml.message(`Your total expenses so far: ₹${totalSpent}`);
-  } else if (/spent on (.+)/.test(userMessage)) {
-    const match = userMessage.match(/spent on (.+)/);
-    if (match) {
-      const category = match[1].trim();
-      const totalSpent = await getExpensesByCategory(category);
-      twiml.message(`You have spent ₹${totalSpent} on ${category}.`);
+      twiml.message(response);
     }
-  } else if (/expenses on (\d{4}-\d{2}-\d{2})/.test(userMessage)) {
-    const match = userMessage.match(/expenses on (\d{4}-\d{2}-\d{2})/);
-    if (match) {
-      const date = match[1];
-      const totalSpent = await getExpensesByDate(date);
-      twiml.message(`You spent ₹${totalSpent} on ${date}.`);
-    }
-  } else {
-    // Process as an expense entry
-    const { amount, expenseCategory } = await extractData(userMessage);
-    if (amount && expenseCategory) {
-      twiml.message(`Saved expense: ₹${amount} on ${expenseCategory}.`);
-    } else {
-      twiml.message("I couldn't process your request. Please try again.");
-    }
+  } catch (error) {
+    console.error("Handler error:", error);
+    twiml.message("Sorry, I couldn't process your request. Please try again.");
   }
 
   res.type("text/xml").send(twiml.toString());
@@ -153,5 +178,5 @@ app.post("/sms", async (req, res) => {
 
 // Start Server
 app.listen(3000, () => {
-  console.log("Express server listening on port 3000");
+  console.log("Server running on port 3000");
 });
