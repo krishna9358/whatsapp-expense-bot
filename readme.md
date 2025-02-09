@@ -41,11 +41,19 @@ npm install
 ```
 GROQ_API_KEY=your_groq_api_key
 MONGO_URI=your_mongodb_connection_string
+TWILIO_ACCOUNT_SID=connection_string
+TWILIO_AUTH_TOKEN=connection token
+TWILIO_WHATSAPP_NUMBER=whatsapp:+91xxxxxxxxxx
+
 ```
 4. Start the server:
 ```
-npm start
+node index.js
 ```
+5. Use ngrok to get the url or deploy the code. 
+``` ngrok http 3000 ```
+
+6. Paste the Url to twillio whatsapp message sendbox settings.
 
 
 ## 📱 How to Use
