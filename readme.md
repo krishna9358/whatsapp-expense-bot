@@ -138,7 +138,7 @@ Accidental Deletions
 13. "₹200 coffee, 10 dollars groceries, 5 euro travel" unexpected input formats
 14. Pagination for List Requests (Show expenses page by page)
 15. Three dots, while generating the response.
-
+16. Multi Language support. 
 
 ## Prompting techniques:
 1. Zero shot prompting 
