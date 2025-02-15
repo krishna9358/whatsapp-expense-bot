@@ -37,8 +37,9 @@ async function processMessage(userMessage) {
           {
             role: "system",
             content: `Extract intent and relevant details from user messages. Return JSON with:
-            - intent: "add_expense", "query", "list_categories", "edit_expense", "delete_expense", "list_all_expenses", "help"
+            - intent: "add_expenses", "query", "list_categories", "edit_expense", "delete_expense", "list_all_expenses", "help"
             - extracted_fields: {
+                expenses?: Array<{amount: number, category: string}>,
                 amount?: number,
                 new_amount?: number,
                 category?: string,
@@ -48,7 +49,9 @@ async function processMessage(userMessage) {
                 old_amount?: number,
                 old_category?: string
             }
-            Parse natural language carefully for edit/delete operations.
+            For multiple expenses in one message (e.g. "100 coffee, 200 chocolate, 500 jalebi"), 
+            set intent as "add_expenses" and populate the expenses array.
+            For other operations, parse natural language carefully.
             Example: "Change 500 food expense to 600" should set old_amount=500, old_category="food", new_amount=600`
           },
           { role: "user", content: userMessage }
@@ -185,6 +188,76 @@ async function deleteExpense(amount, category, date) {
   return `✅ Deleted ${category} expense of ₹${amount} from ${startDate.toISOString().split('T')[0]}`;
 }
 
+// Add this function after the processMessage function
+async function normalizeCategory(category) {
+  try {
+    const response = await axios.post(
+      GROQ_API_URL,
+      {
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          {
+            role: "system",
+            content: `Normalize expense categories into standard categories. Map user input to these fixed categories:
+            - Food (restaurants, dining out, takeaway)
+            - Groceries (supermarket, food items, household supplies)
+            - Transport (uber, ola, taxi, bus, train, fuel)
+            - Shopping (clothes, electronics, accessories)
+            - Entertainment (movies, games, streaming)
+            - Beverages (coffee, tea, drinks, smoothies)
+            - Healthcare (medical, pharmacy, doctor)
+            - Utilities (electricity, water, internet, phone)
+            - Others (miscellaneous expenses)
+
+            Return only the normalized category name without any explanation.
+            Examples:
+            - "cofee" -> "Beverages"
+            - "ola to office" -> "Transport"
+            - "cold coffee" -> "Beverages"
+            - "lunch" -> "Food"
+            `
+          },
+          { role: "user", content: category }
+        ],
+        temperature: 0.1,
+        max_tokens: 50
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${GROQ_API_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const normalizedCategory = response.data.choices[0].message.content.trim();
+    console.log(`📝 Normalized category: ${category} -> ${normalizedCategory}`);
+    return normalizedCategory;
+  } catch (error) {
+    console.error("❌ Category normalization error:", error.response?.data || error.message);
+    return category; // Return original category if normalization fails
+  }
+}
+
+// Modify the addMultipleExpenses function
+async function addMultipleExpenses(expenses, date) {
+  const expenseDate = inferDate(date);
+  const savedExpenses = [];
+
+  for (const exp of expenses) {
+    const normalizedCategory = await normalizeCategory(exp.category);
+    const expense = new Expense({
+      amount: exp.amount,
+      expenseCategory: normalizedCategory,
+      date: expenseDate
+    });
+    await expense.save();
+    savedExpenses.push(`₹${exp.amount} for ${normalizedCategory}`);
+  }
+
+  return `✅ Added expenses on ${expenseDate.toISOString().split("T")[0]}:\n${savedExpenses.join("\n")}`;
+}
+
 // Twilio Webhook
 app.post("/sms", async (req, res) => {
   const twiml = new MessagingResponse();
@@ -193,16 +266,24 @@ app.post("/sms", async (req, res) => {
     const processed = await processMessage(req.body.Body);
     const { intent, extracted_fields } = processed;
 
-    if (intent === 'add_expense') {
+    if (intent === 'add_expenses') {
+      if (extracted_fields.expenses && extracted_fields.expenses.length > 0) {
+        twiml.message(await addMultipleExpenses(extracted_fields.expenses, extracted_fields.date));
+      } else {
+        twiml.message("❌ Please specify amounts and categories. Example: '100 coffee, 200 chocolate'");
+      }
+    }
+    else if (intent === 'add_expense') {
       if (extracted_fields.amount && extracted_fields.category) {
         const expenseDate = inferDate(extracted_fields.date);
+        const normalizedCategory = await normalizeCategory(extracted_fields.category);
         const expense = new Expense({ 
           amount: extracted_fields.amount, 
-          expenseCategory: extracted_fields.category, 
+          expenseCategory: normalizedCategory, 
           date: expenseDate 
         });
         await expense.save();
-        twiml.message(`✅ Added ₹${extracted_fields.amount} for ${extracted_fields.category} on ${expenseDate.toISOString().split("T")[0]}`);
+        twiml.message(`✅ Added ₹${extracted_fields.amount} for ${normalizedCategory} on ${expenseDate.toISOString().split("T")[0]}`);
       } else {
         twiml.message("❌ Please specify amount and category. Example: 'Spent ₹500 on food yesterday'");
       }

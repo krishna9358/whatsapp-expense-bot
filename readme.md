@@ -101,3 +101,44 @@ Send WhatsApp messages to your configured Twilio number using these commands:
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+
+
+## New Fixed:
+1. Multiple Entries
+2. catogires
+
+
+
+## Edge cases:
+1. User may need more deep info about the particular category. For example all the food expenses distribution. 
+2. Multiple expenses in one input (fixed)
+Input: "100 coffee, 200 chocolate, 500 jalebi"
+Parsed Output: [{ amount: 100, category: "coffee" }, { amount: 200, category: "chocolate" }, { amount: 500, category: "jalebi" }]
+3. User enters "200, chocolate" (missing amount or category). more validation.
+4. User enters "100 coffee, 100 coffee" (duplicate entries).
+5. 
+Edit Expense
+Ensure the original expense exists before editing.
+If multiple matching records exist, update only the most recent.
+6. 
+Delete Expense
+Ensure expense exists before deleting.
+If multiple expenses match, delete only one.
+Accidental Deletions
+7. User typos (fixed)
+8. Rate Limiting & Spam Prevention
+9. Someone might enter "-100 food" or "0 groceries" leading to invalid data.
+10. May date format confuse the use. Example : 10/2/25 and 2/10/25. Need more validation
+11. A user might send an empty message or non-sensical input.
+12. Twilio has a 1600-character SMS limit. Prevent long messages.
+13. "₹200 coffee, 10 dollars groceries, 5 euro travel" unexpected input formats
+14. Pagination for List Requests (Show expenses page by page)
+
+
+## Prompting techniques:
+1. Zero shot prompting 
+2. Few shot prompting
+3. Chain of thoughts
+4. Self consistency Prompting
+5. Instruction Based Prompting   
