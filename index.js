@@ -336,6 +336,11 @@ app.post("/sms", async (req, res) => {
   res.type("text/xml").send(twiml.toString());
 });
 
+app.post("/", (req, res) => {
+  console.log("ok");
+  res.send("ok");
+});
+
 // Start Server
 app.listen(3000, () => {
   console.log("🚀 Server running on port 3000");
