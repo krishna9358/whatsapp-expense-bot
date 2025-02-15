@@ -19,7 +19,8 @@ mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
 const expenseSchema = new mongoose.Schema({
   amount: Number,
   expenseCategory: String,
-  date: { type: Date, default: Date.now }
+  date: { type: Date, default: Date.now },
+  currency: { type: String, default: '₹' }
 });
 
 const Expense = mongoose.model("Expense", expenseSchema);
@@ -39,7 +40,7 @@ async function processMessage(userMessage) {
             content: `Extract intent and relevant details from user messages. Return JSON with:
             - intent: "add_expenses", "query", "list_categories", "edit_expense", "delete_expense", "list_all_expenses", "help"
             - extracted_fields: {
-                expenses?: Array<{amount: number, category: string}>,
+                expenses?: Array<{amount: number, category: string, currency?: string}>,
                 amount?: number,
                 new_amount?: number,
                 category?: string,
@@ -47,12 +48,12 @@ async function processMessage(userMessage) {
                 period?: "today"|"yesterday",
                 type?: "total"|"category",
                 old_amount?: number,
-                old_category?: string
+                old_category?: string,
+                currency?: string
             }
-            For multiple expenses in one message (e.g. "100 coffee, 200 chocolate, 500 jalebi"), 
-            set intent as "add_expenses" and populate the expenses array.
-            For other operations, parse natural language carefully.
-            Example: "Change 500 food expense to 600" should set old_amount=500, old_category="food", new_amount=600`
+            Detect currency symbols ($, ₹, €, £, ¥) from the input. Default to ₹ if not specified.
+            For multiple expenses in one message (e.g. "$100 coffee, €200 chocolate"), 
+            set intent as "add_expenses" and populate the expenses array with respective currencies.`
           },
           { role: "user", content: userMessage }
         ],
@@ -108,28 +109,42 @@ async function getTotalExpense(period) {
   const end = new Date(start);
   end.setHours(23, 59, 59, 999);
 
-  const total = await Expense.aggregate([
+  const expenses = await Expense.aggregate([
     { $match: { date: { $gte: start, $lte: end } } },
-    { $group: { _id: null, total: { $sum: "$amount" } } }
+    {
+      $group: {
+        _id: "$currency",
+        total: { $sum: "$amount" }
+      }
+    }
   ]);
 
-  return total.length ? `Total spent ${period}: ₹${total[0].total}` : `No expenses recorded ${period}.`;
+  if (!expenses.length) return `No expenses recorded ${period}.`;
+  return `Total spent ${period}: ${expenses.map(e => `${e._id}${e.total}`).join(', ')}`;
 }
 
 // Fetch expenses by category
 async function getExpenseByCategory(category) {
-  const total = await Expense.aggregate([
+  const expenses = await Expense.aggregate([
     { $match: { expenseCategory: category } },
-    { $group: { _id: "$expenseCategory", total: { $sum: "$amount" } } }
+    {
+      $group: {
+        _id: { category: "$expenseCategory", currency: "$currency" },
+        total: { $sum: "$amount" }
+      }
+    }
   ]);
 
-  return total.length ? `Total spent on ${category}: ₹${total[0].total}` : `No expenses found for ${category}.`;
+  if (!expenses.length) return `No expenses found for ${category}.`;
+  return `Total spent on ${category}: ${expenses.map(e => `${e._id.currency}${e.total}`).join(', ')}`;
 }
 
 // Fetch all expenses
 async function listAllExpenses() {
   const expenses = await Expense.find().sort({ date: -1 });
-  return expenses.length ? expenses.map(exp => `${exp.date.toISOString().split("T")[0]}: ₹${exp.amount} on ${exp.expenseCategory}`).join("\n") : "No expenses recorded.";
+  return expenses.length ? 
+    expenses.map(exp => `${exp.date.toISOString().split("T")[0]}: ${exp.currency}${exp.amount} on ${exp.expenseCategory}`).join("\n") : 
+    "No expenses recorded.";
 }
 
 // Help message
@@ -249,10 +264,11 @@ async function addMultipleExpenses(expenses, date) {
     const expense = new Expense({
       amount: exp.amount,
       expenseCategory: normalizedCategory,
-      date: expenseDate
+      date: expenseDate,
+      currency: exp.currency || '₹'
     });
     await expense.save();
-    savedExpenses.push(`₹${exp.amount} for ${normalizedCategory}`);
+    savedExpenses.push(`${expense.currency}${exp.amount} for ${normalizedCategory}`);
   }
 
   return `✅ Added expenses on ${expenseDate.toISOString().split("T")[0]}:\n${savedExpenses.join("\n")}`;

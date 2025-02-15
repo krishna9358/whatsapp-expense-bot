@@ -104,9 +104,12 @@ Send WhatsApp messages to your configured Twilio number using these commands:
 
 
 
-## New Fixed:
+## Task given:
 1. Multiple Entries
 2. catogires
+3. deployed
+4. prompting
+5. edge cases
 
 
 
